@@ -17,7 +17,7 @@ library(tidyverse)
 #### Count Data ####
 simulate_count_data<-function(type, plots,length, intercept, plot_eff_sd, trend=1, size=1){
 
-  Count_Accumlator<-function(old, new, type, size){
+  Count_Accumulator<-function(old, new, type, size){
     switch(type,
     p=rpois(n=1, lambda = exp(new + log(old) ) ),
     nb=rnbinom(n=1, mu=exp(new + log(old)), size=size)
@@ -54,7 +54,7 @@ simulate_count_data<-function(type, plots,length, intercept, plot_eff_sd, trend=
 
 simulate_continuous_data<-function(type, plots,length, intercept, plot_eff_sd, trend=1, sd){
   
-  Count_Accumlator<-function(old, new, type, sd){
+  Continuous_Accumulator<-function(old, new, type, sd){
     switch(type,
            n=rnorm(n=1, mean = new +old, sd=sd ) #,
            #nb=rnbinom(n=1, mu=exp(new + log(old)), size=size)
@@ -65,20 +65,19 @@ simulate_continuous_data<-function(type, plots,length, intercept, plot_eff_sd, t
                    Time=rep(0:(length-1), each=plots),
                    Intercept=intercept,
                    Plot_eff=rnorm(plots, 0, plot_eff_sd),
-                   Trend=trend,
+                   Resid=rnorm(n=plots*length, 0, sd),
                    Type=type,
-                   Size=size)
-  
-  Data<- Data %>% mutate(Log_Intercept=log(Intercept),
-                         Log_Trend=ifelse(Time==0, 0, log(Trend))) %>% 
-    dplyr::rowwise() %>% 
+                   SD=sd) %>% 
+    mutate (Trend=ifelse(Time==0,0,trend))
+  Data<- Data %>% 
+  dplyr::rowwise() %>% 
     mutate(Expected_Lin_Change=ifelse(Time==0, 
-                                      sum(Log_Intercept,Log_Trend,Plot_eff),
-                                      sum(Log_Trend) )) %>% 
+                                      sum(Intercept,Trend,Plot_eff),
+                                      sum(Trend ))) %>% 
     ungroup() %>% 
     group_by(Plot) %>% arrange (Time) %>% 
-    mutate(Count=(Expected_Lin_Change %>% accumulate(.f=Count_Accumlator, type=type,size=size,
-                                                     .init=1))[-1]
+    mutate(Value=(Expected_Lin_Change %>% accumulate(.f=Continuous_Accumlator,
+                                  type=type, sd=sd, .init=1))[-1]
     )
   return(Data)
 }
