@@ -8,7 +8,7 @@ library(tidyverse)
 ## type = type of distribution ("p"= Poisson, "nb" = negative binomial)
 ## plots = number of observations per time step (e.g. number of plots)
 ## init_mean = mean of data at time 1
-## trend = average proporiton change per unit time (e.g 1= no change, 1.01= +1%)
+## trend = average proportion change per unit time (e.g 1= no change, 1.01= +1%)
 ## length = number of time periods in the study
 ## plot_eff = random effect size of plots on the log scale. (e.g. the SD of the random effect of plot on log scale)
 # resid = residual variance not otherwise accounred for, on the log scale
@@ -40,7 +40,7 @@ simulate_count_data<-function(type, plots,length, intercept, plot_eff_sd, trend=
                         sum(Log_Trend) )) %>% 
       ungroup() %>% 
       group_by(Plot) %>% arrange (Time) %>% 
-      mutate(Count=(Expected_Lin_Change %>% accumulate(.f=Count_Accumlator, type=type,size=size,
+      mutate(Count=(Expected_Lin_Change %>% accumulate(.f=Count_Accumulator, type=type,size=size,
                       .init=1))[-1]
                   )
   return(Data)
