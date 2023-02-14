@@ -1,0 +1,201 @@
+---
+title: "Code for getting random effects of plots from count data using brms"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+1.  Get a data set:
+
+```{r}
+library(NPSForVeg)
+library(tidyverse)
+
+NCRN<-importNCRN("C:/Data/NCRN_Veg_2022_Good/")
+
+PRWITrees<-getPlants(NCRN[[9]], "trees") %>% 
+  group_by(Plot_Name,Sample_Year) %>% 
+  summarise(Trees=n()) %>% 
+  ungroup %>% 
+  mutate(Year_Cent=scale(Sample_Year, center=T, scale=F))
+
+head(PRWITrees)
+```
+
+2.  Fit a `brms` model and check it.
+
+```{r}
+library(brms)
+
+mod0<-brm(Trees~1+Year_Cent , data=PRWITrees, family=poisson(),
+          cores=4, chains=4, warmup=1000,iter=5000
+          )
+mod0
+
+```
+
+This model has no random effects. The R-hat values indicate convergence. 1.00 is the best score, over 1.05 is a problem. Ideally for 95% CIs some folks say you need 20000 Tail_ESS (ESS= effective sample size), but this is fine for now. The intercept is 3.48, so `exp(3.48)` implies a mean of 32 trees per plot which is very reasonable. Rounding is obscuring what is going on with the trend a little so I'll use `fixef()` to dig deeper
+
+```{r}
+fixef(mod0) %>% round(4)
+```
+
+There is an increase of 100\*(1-exp(.003))= 0.3% increase per year, and the 95% CI does not cross zero. Now use pp_check which does a posterior predictive check to see how good the fit is:
+
+```{r}
+pp_check(mod0, ndraw=500)
+```
+
+Here is the real data (dark line) vs 500 posterior draws from the model (light blue lines). The graph is a smoothed density plot. Ideally the dark line should be in the light blue shading. This particular model is deeply terrible and wrong. There are a lot of pp_check plot types, here is another
+
+```{r}
+pp_check(mod0, ndraw=500, type="stat_2d")
+```
+
+Again, this is terrible. Also if the mean is 32.5, and there are no random effects or covariates to confuse things, then the sd should be the square root of that, around 5.7 and our data aren't like that.
+
+3.  Check the priors
+
+So now I'll check what priors `brms` used
+
+```{r}
+prior_summary(mod0)
+```
+
+These priors are not the problem, but I will tighten them up a little now anyway. By using `hist()` I will look at what the Intercept prior is doing. The prior is on the log scale. I expect the mean \# of trees per plot to be somewhere between 20 and 40, which on a log scale is between 3 and 3.7
+
+```{r}
+rstudent_t(1000, 3, 3.4, 2.5) %>%  hist
+```
+
+This is way too wide. By reducing the sigma parameter I can narrow that down
+
+```{r}
+rstudent_t(1000, 3, 3.4, 0.25) %>%  hist
+```
+
+Still somewhat wide, but way better.
+
+For the slope, I expect it to be no more than a 3% change per year (up or down) which would be about 0.97 to 1.03 on a log scale, so maybe:
+
+```{r}
+rnorm(1000, 1, .015) %>% hist
+```
+
+Good enough. So redo with priors
+
+```{r}
+My_Prior<-prior(student_t(3, 3.4, 0.25), class="Intercept" )+
+  prior("normal(0,0.015)", class="b", coef=Year_Cent)
+
+mod1<-brm(Trees~1+Year_Cent , data=PRWITrees, family=poisson(), prior = My_Prior,
+          cores=4, chains=4, warmup=1000,iter=5000
+          )
+mod1
+
+
+```
+
+Nothing changed
+
+```{r}
+pp_check(mod1, ndraws=500)
+```
+
+Still terrible. The priors weren't the issue.
+
+4.  Now add random effect of plot:
+
+```{r}
+mod2<-brm(Trees~1+Year_Cent +(1|Plot_Name) , data=PRWITrees, family=poisson(), 
+          prior = My_Prior,cores=4, chains=4, warmup=1000,iter=5000
+          )
+mod2
+```
+
+R-hats are all good. Note that the tail ESS for the random effect is lower than for the Year term. The model could be re-run with more iterations to improve that. The intercept is a little smaller, than before, check the slope.
+
+```{r}
+fixef(mod2)
+```
+
+Slope is much smaller and the 95% CI no longer is entirely above 0 - now no evidence for an increase over time.
+
+Checks
+
+```{r}
+pp_check(mod2, ndraws=500)
+```
+
+Much Much better. Not perfect, but pretty good.
+
+```{r}
+pp_check(mod2, ndraw=500, type="stat_2d")
+```
+
+Meh, the mean is good but the model is slightly overestimating variability. Here is the sd of the random effect:
+
+```{r}
+posterior_summary(mod2, variable = "sd_Plot_Name__Intercept")
+```
+
+I could try to mess with the model - a fire killed trees in 6 plots and by adding that as a covariate (or some other covariate like stand age) I could possibly improve the fit. However, for our purposes, a sd of 0.32 with a 95% CI of (0.28-0.36) for a plot random intercept is probably fine. If the exact interval really matters re-running with more MCMC iterations (the `iter=###` argument) would be good.
+
+
+5. Do this for all parks
+
+```{r}
+names(NCRN)<-getNames(NCRN, name.class = "code")
+
+
+ParkData<-  getPlants(NCRN, "trees", output="list") %>% 
+    map(~.x %>%  group_by(Plot_Name,Sample_Year) %>% 
+  summarise(Trees=n()) %>% 
+  ungroup %>% 
+  mutate(Year_Cent=scale(Sample_Year, center=T, scale=F))
+
+)
+
+RE_models<-ParkData %>% map(~brm(Trees~1+Year_Cent +(1|Plot_Name) , data=.x, family=poisson(), 
+          prior = My_Prior,cores=4, chains=4, warmup=1000,iter=5000
+          )) #
+
+
+```
+The model for WOTR had 7 divergent transitions - in had 1 plot in the first cycle, and 6 in the next 3, so no surprise
+
+Do pp_checks
+
+```{r}
+
+RE_models %>% map(~pp_check(.x, ndraws=500))
+
+
+```
+```{r}
+RE_models %>% map(~pp_check(.x, ndraws=500,  type="stat_2d"))
+```
+These do pretty well. 
+
+Now make tables of parameter estiamates
+
+Intercept
+```{r}
+RE_models %>% map(~fixef(.x, pars="Intercept") %>% as.data.frame) %>% list_rbind( names_to = "Park")
+
+```
+Slope
+```{r}
+RE_models %>% map(~fixef(.x, pars="Year_Cent") %>% as.data.frame) %>% list_rbind( names_to = "Park")
+
+```
+
+
+Random Effects of Plot
+```{r}
+RE_models %>% map(~posterior_summary(.x, variable = "sd_Plot_Name__Intercept") %>% as.data.frame) %>% list_rbind( names_to = "Park")
+```
+
+
+
+
